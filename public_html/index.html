@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WebXR 6DoF Pose Logger</title>
+  <style>
+    body { margin: 0; overflow: hidden; font-family: monospace; }
+    #ui-overlay {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      background: rgba(0, 0, 0, 0.8);
+      color: #00ffcc;
+      padding: 14px;
+      border-radius: 8px;
+      z-index: 9999;
+      font-size: 13px;
+      line-height: 1.6;
+      pointer-events: none;
+    }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+
+  <div id="ui-overlay">
+    <div><strong>Live Tracking Data</strong></div>
+    <div id="pos">Position: X: 0.00, Y: 0.00, Z: 0.00</div>
+    <div id="rot">Rotation: P: 0.0°, Y: 0.0°, R: 0.0°</div>
+  </div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { ARButton } from 'three/addons/webxr/ARButton.js';
+
+    let camera, scene, renderer;
+    const posDiv = document.getElementById('pos');
+    const rotDiv = document.getElementById('rot');
+
+    init();
+
+    function init() {
+      scene = new THREE.Scene();
+      camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
+
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.xr.enabled = true;
+      document.body.appendChild(renderer.domElement);
+
+      // Initialize WebXR AR session with DOM Overlay support
+      document.body.appendChild(ARButton.createButton(renderer, {
+        optionalFeatures: ['dom-overlay'],
+        domOverlay: { root: document.body }
+      }));
+
+      // Add a reference 3D cube placed 0.5m in front of the origin
+      const cube = new THREE.Mesh(
+        new THREE.BoxGeometry(0.1, 0.1, 0.1),
+        new THREE.MeshNormalMaterial()
+      );
+      cube.position.set(0, 0, -0.5);
+      scene.add(cube);
+
+      renderer.setAnimationLoop(render);
+      window.addEventListener('resize', onWindowResize);
+    }
+
+    function onWindowResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    function render(timestamp, frame) {
+      if (frame) {
+        const xrCamera = renderer.xr.getCamera();
+
+        // 1. Position vector (x, y, z) in meters relative to session start origin
+        const pos = xrCamera.position;
+        posDiv.textContent = `Position (m): X: ${pos.x.toFixed(2)}, Y: ${pos.y.toFixed(2)}, Z: ${pos.z.toFixed(2)}`;
+
+        // 2. Quaternion converted to Euler angles (Pitch, Yaw, Roll in degrees)
+        const euler = new THREE.Euler().setFromQuaternion(xrCamera.quaternion, 'YXZ');
+        const pitch = THREE.MathUtils.radToDeg(euler.x).toFixed(1);
+        const yaw = THREE.MathUtils.radToDeg(euler.y).toFixed(1);
+        const roll = THREE.MathUtils.radToDeg(euler.z).toFixed(1);
+
+        rotDiv.textContent = `Rotation (°): P: ${pitch}°, Y: ${yaw}°, R: ${roll}°`;
+      }
+
+      renderer.render(scene, camera);
+    }
+  </script>
+</body>
+</html>
