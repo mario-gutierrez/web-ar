@@ -2,10 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>iOS WebAR 6DoF Pose Logger</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>AlvaAR iOS 6DoF Pose Logger</title>
   <style>
-    body { margin: 0; overflow: hidden; font-family: monospace; }
+    body { margin: 0; overflow: hidden; font-family: monospace; background-color: #000; }
+    #video { display: none; }
     #ui-overlay {
       position: absolute;
       top: 16px;
@@ -21,88 +22,126 @@
     }
   </style>
 
-  <!-- Load Three.js and Zappar WebAR Engine -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-  <script src="https://libs.zappar.com/zappar-threejs/4.3.0/zappar-threejs.js"></script>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+      }
+    }
+  </script>
 </head>
 <body>
 
   <div id="ui-overlay">
-    <div><strong>iOS Safari 6DoF Pose</strong></div>
+    <div><strong>AlvaAR iOS 6DoF Pose</strong></div>
+    <div id="status">Status: Requesting Camera...</div>
     <div id="pos">Position: X: 0.00, Y: 0.00, Z: 0.00</div>
     <div id="rot">Rotation: P: 0.0°, Y: 0.0°, R: 0.0°</div>
   </div>
 
-  <script>
-    // 1. Initialize Three.js WebGL Renderer
-    const scene = new THREE.Scene();
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-    renderer.setPixelRatio(window.devicePixelRatio);
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    document.body.appendChild(renderer.domElement);
+  <video id="video" playsinline webkit-playsinline></video>
 
-    // Bind WebGL context to Zappar's WASM engine
-    ZapparThree.glContextSet(renderer.getContext());
+  <script type="module">
+    import * as THREE from 'three';
+    import { AlvaAR } from 'https://cdn.jsdelivr.net/gh/alanross/AlvaAR@master/public/alva_ar.js';
 
-    // 2. Setup Zappar Camera
-    const camera = new ZapparThree.Camera();
-    scene.background = camera.backgroundTexture;
-
-    // Prompt for iOS camera permissions natively
-    ZapparThree.permissionRequestUI().then((granted) => {
-      if (granted) camera.start();
-      else ZapparThree.permissionDeniedUI();
-    });
-
-    // 3. Setup Instant World Tracker (6DoF SLAM Engine)
-    const tracker = new ZapparThree.InstantWorldTracker();
-    const trackerGroup = new ZapparThree.InstantWorldAnchorGroup(camera, tracker);
-    scene.add(trackerGroup);
-
-    // Place reference 3D cube at origin
-    const cube = new THREE.Mesh(
-      new THREE.BoxGeometry(0.15, 0.15, 0.15),
-      new THREE.MeshNormalMaterial()
-    );
-    trackerGroup.add(cube);
-
-    // Set initial anchor 1 meter in front of camera
-    tracker.setAnchorPoseFromCameraOffset(0, 0, -1);
-
-    // Tap screen to re-anchor world origin to current camera position
-    window.addEventListener('click', () => {
-      tracker.setAnchorPoseFromCameraOffset(0, 0, -1);
-    });
-
+    const video = document.getElementById('video');
+    const statusDiv = document.getElementById('status');
     const posDiv = document.getElementById('pos');
     const rotDiv = document.getElementById('rot');
 
-    // 4. Animation and Logging Loop
-    function animate() {
-      requestAnimationFrame(animate);
+    async function startAR() {
+      // 1. Request iPhone environment camera stream
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
+      });
+      video.srcObject = stream;
+      await video.play();
 
-      // Update camera frame for WebAssembly feature tracking
-      camera.updateFrame(renderer);
+      const width = video.videoWidth;
+      const height = video.videoHeight;
 
-      // Extract 6DoF camera position relative to world anchor
-      const pos = camera.position;
-      posDiv.textContent = `Position (m): X: ${pos.x.toFixed(2)}, Y: ${pos.y.toFixed(2)}, Z: ${pos.z.toFixed(2)}`;
+      // 2. Offscreen canvas to capture pixel frames for WebAssembly CV pipeline
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-      // Extract Euler angles (Pitch, Yaw, Roll) from camera quaternion
-      const euler = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ');
-      const pitch = THREE.MathUtils.radToDeg(euler.x).toFixed(1);
-      const yaw = THREE.MathUtils.radToDeg(euler.y).toFixed(1);
-      const roll = THREE.MathUtils.radToDeg(euler.z).toFixed(1);
+      // 3. Initialize AlvaAR SLAM Engine
+      statusDiv.textContent = "Status: Initializing SLAM...";
+      const alva = await AlvaAR.Initialize(width, height);
 
-      rotDiv.textContent = `Rotation (°): P: ${pitch}°, Y: ${yaw}°, R: ${roll}°`;
+      // 4. Setup Three.js Scene and Camera
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.01, 100);
+      camera.matrixAutoUpdate = false; // Disable auto-updates to allow manual SLAM matrix overrides
 
-      renderer.render(scene, camera);
+      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.domElement.style.position = 'absolute';
+      renderer.domElement.style.top = '0';
+      renderer.domElement.style.left = '0';
+      document.body.appendChild(renderer.domElement);
+
+      // Bind camera feed to background texture
+      scene.background = new THREE.VideoTexture(video);
+
+      // Add reference 3D cube placed at origin
+      const cube = new THREE.Mesh(
+        new THREE.BoxGeometry(0.15, 0.15, 0.15),
+        new THREE.MeshNormalMaterial()
+      );
+      cube.position.set(0, 0, -0.5);
+      scene.add(cube);
+
+      // Matrix decomposition variables
+      const posVec = new THREE.Vector3();
+      const quatVec = new THREE.Quaternion();
+      const scaleVec = new THREE.Vector3();
+
+      // 5. Processing and Pose Logging Loop
+      function loop() {
+        requestAnimationFrame(loop);
+
+        // Feed video frame array into AlvaAR SLAM finder
+        ctx.drawImage(video, 0, 0, width, height);
+        const frame = ctx.getImageData(0, 0, width, height);
+        const cameraPose = alva.findCameraPose(frame);
+
+        if (cameraPose) {
+          statusDiv.textContent = "Status: Tracking Active";
+
+          // Apply 16-element 4x4 camera pose matrix directly to Three.js camera
+          camera.matrix.fromArray(cameraPose);
+          camera.matrixWorldNeedsUpdate = true;
+
+          // Decompose 4x4 transformation matrix into position vector and quaternion
+          camera.matrix.decompose(posVec, quatVec, scaleVec);
+
+          // Update position display (x, y, z in meters)
+          posDiv.textContent = `Position (m): X: ${posVec.x.toFixed(2)}, Y: ${posVec.y.toFixed(2)}, Z: ${posVec.z.toFixed(2)}`;
+
+          // Convert quaternion orientation into Euler angles (Pitch, Yaw, Roll in degrees)
+          const euler = new THREE.Euler().setFromQuaternion(quatVec, 'YXZ');
+          const pitch = THREE.MathUtils.radToDeg(euler.x).toFixed(1);
+          const yaw = THREE.MathUtils.radToDeg(euler.y).toFixed(1);
+          const roll = THREE.MathUtils.radToDeg(euler.z).toFixed(1);
+
+          rotDiv.textContent = `Rotation (°): P: ${pitch}°, Y: ${yaw}°, R: ${roll}°`;
+        } else {
+          statusDiv.textContent = "Status: Searching for surface points...";
+        }
+
+        renderer.render(scene, camera);
+      }
+
+      loop();
     }
 
-    animate();
-
-    window.addEventListener('resize', () => {
-      renderer.setSize(window.innerWidth, window.innerHeight);
+    startAR().catch(err => {
+      statusDiv.textContent = `Error: ${err.message}`;
+      console.error(err);
     });
   </script>
 </body>
