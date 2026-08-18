@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>iOS WebAR 6DoF Pose Logger</title>
+  <style>
+    body { margin: 0; overflow: hidden; font-family: monospace; }
+    #ui-overlay {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      background: rgba(0, 0, 0, 0.85);
+      color: #00ffcc;
+      padding: 14px;
+      border-radius: 8px;
+      z-index: 9999;
+      font-size: 13px;
+      line-height: 1.6;
+      pointer-events: none;
+    }
+  </style>
+
+  <!-- Load Three.js and Zappar WebAR Engine -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://libs.zappar.com/zappar-threejs/4.3.0/zappar-threejs.js"></script>
+</head>
+<body>
+
+  <div id="ui-overlay">
+    <div><strong>iOS Safari 6DoF Pose</strong></div>
+    <div id="pos">Position: X: 0.00, Y: 0.00, Z: 0.00</div>
+    <div id="rot">Rotation: P: 0.0°, Y: 0.0°, R: 0.0°</div>
+  </div>
+
+  <script>
+    // 1. Initialize Three.js WebGL Renderer
+    const scene = new THREE.Scene();
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    // Bind WebGL context to Zappar's WASM engine
+    ZapparThree.glContextSet(renderer.getContext());
+
+    // 2. Setup Zappar Camera
+    const camera = new ZapparThree.Camera();
+    scene.background = camera.backgroundTexture;
+
+    // Prompt for iOS camera permissions natively
+    ZapparThree.permissionRequestUI().then((granted) => {
+      if (granted) camera.start();
+      else ZapparThree.permissionDeniedUI();
+    });
+
+    // 3. Setup Instant World Tracker (6DoF SLAM Engine)
+    const tracker = new ZapparThree.InstantWorldTracker();
+    const trackerGroup = new ZapparThree.InstantWorldAnchorGroup(camera, tracker);
+    scene.add(trackerGroup);
+
+    // Place reference 3D cube at origin
+    const cube = new THREE.Mesh(
+      new THREE.BoxGeometry(0.15, 0.15, 0.15),
+      new THREE.MeshNormalMaterial()
+    );
+    trackerGroup.add(cube);
+
+    // Set initial anchor 1 meter in front of camera
+    tracker.setAnchorPoseFromCameraOffset(0, 0, -1);
+
+    // Tap screen to re-anchor world origin to current camera position
+    window.addEventListener('click', () => {
+      tracker.setAnchorPoseFromCameraOffset(0, 0, -1);
+    });
+
+    const posDiv = document.getElementById('pos');
+    const rotDiv = document.getElementById('rot');
+
+    // 4. Animation and Logging Loop
+    function animate() {
+      requestAnimationFrame(animate);
+
+      // Update camera frame for WebAssembly feature tracking
+      camera.updateFrame(renderer);
+
+      // Extract 6DoF camera position relative to world anchor
+      const pos = camera.position;
+      posDiv.textContent = `Position (m): X: ${pos.x.toFixed(2)}, Y: ${pos.y.toFixed(2)}, Z: ${pos.z.toFixed(2)}`;
+
+      // Extract Euler angles (Pitch, Yaw, Roll) from camera quaternion
+      const euler = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ');
+      const pitch = THREE.MathUtils.radToDeg(euler.x).toFixed(1);
+      const yaw = THREE.MathUtils.radToDeg(euler.y).toFixed(1);
+      const roll = THREE.MathUtils.radToDeg(euler.z).toFixed(1);
+
+      rotDiv.textContent = `Rotation (°): P: ${pitch}°, Y: ${yaw}°, R: ${roll}°`;
+
+      renderer.render(scene, camera);
+    }
+
+    animate();
+
+    window.addEventListener('resize', () => {
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
+</body>
+</html>
